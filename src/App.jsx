@@ -10,45 +10,32 @@ import {
 // 0. 配置中心 (环境兼容安全模式)
 // ==========================================
 
-// 编写一个安全的函数来获取环境变量，防止在不支持 import.meta 的预览环境中崩溃
+// 安全获取环境变量
 const getSafeEnvKey = () => {
   try {
     if (typeof import.meta !== 'undefined' && import.meta.env) {
       return import.meta.env.VITE_GEMINI_API_KEY || "";
     }
-  } catch (e) {
-    // 忽略错误
-  }
+  } catch (e) {}
   return "";
 };
 
-// 自动识别是否在预览沙盒环境 (Canvas)
+// 自动识别环境
 const IS_CANVAS = typeof window !== 'undefined' && window.location.hostname.includes('usercontent.goog');
 
-// 获取最终使用的 API Key
+// 获取 API Key
 const GEMINI_API_KEY = IS_CANVAS ? "" : getSafeEnvKey(); 
 
-// 模型名称配置：
-// 预览区必须使用实验版：gemini-2.5-flash-preview-09-2025
-// 外部部署 (Vercel) 使用标准版：gemini-1.5-flash (注意：不要加 -latest 或大写字母)
+/**
+ * 模型代号配置 (核心修复点)
+ * 预览区使用：gemini-2.5-flash-preview-09-2025
+ * 部署版使用：gemini-1.5-flash (这是目前最稳定的标准代号)
+ */
 const GEMINI_MODEL = IS_CANVAS ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash";
 
 // ==========================================
-// 1. 食物数据库 (基础参考)
+// 1. 基础配置
 // ==========================================
-const FOOD_DB = [
-  { id: 'f1', name: '鸡蛋', unit: '1 颗 (50g)', calories: 78, protein: 6.3, carbs: 0.6, fat: 5.3 },
-  { id: 'f2', name: '牛奶', unit: '1 杯 (250ml)', calories: 150, protein: 8.0, carbs: 12.0, fat: 8.0 },
-  { id: 'f3', name: '包菜', unit: '100g', calories: 25, protein: 1.3, carbs: 5.8, fat: 0.1 },
-  { id: 'f4', name: '猪肉', unit: '100g (瘦)', calories: 143, protein: 26.0, carbs: 0.0, fat: 4.0 },
-  { id: 'f5', name: '鸡胸肉', unit: '100g', calories: 165, protein: 31.0, carbs: 0.0, fat: 3.6 },
-  { id: 'f6', name: '白饭', unit: '1 碗 (150g)', calories: 205, protein: 4.3, carbs: 45.0, fat: 0.4 },
-  { id: 'f7', name: '面包', unit: '1 片 (30g)', calories: 79, protein: 2.7, carbs: 15.0, fat: 1.0 },
-  { id: 'f8', name: '香蕉', unit: '1 根 (118g)', calories: 105, protein: 1.3, carbs: 27.0, fat: 0.3 },
-  { id: 'f9', name: '燕麦', unit: '1 份 (40g)', calories: 150, protein: 5.0, carbs: 27.0, fat: 2.5 },
-  { id: 'f10', name: '豆腐', unit: '100g (板豆腐)', calories: 144, protein: 16.0, carbs: 2.8, fat: 8.7 },
-];
-
 const MEAL_TYPES = ['早餐', '午餐', '晚餐', '宵夜'];
 
 const renderMealIcon = (meal, className) => {
@@ -62,13 +49,11 @@ const renderMealIcon = (meal, className) => {
 };
 
 export default function App() {
-  // ------------------------------------------
-  // 状态管理
-  // ------------------------------------------
   const [inputText, setInputText] = useState('');
   const [selectedMeal, setSelectedMeal] = useState(MEAL_TYPES[0]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [apiError, setApiError] = useState('');
+  const fileInputRef = useRef(null);
   
   const getTodayStr = () => {
     const today = new Date();
@@ -80,17 +65,12 @@ export default function App() {
     if (savedStr) {
       try {
         const saved = JSON.parse(savedStr);
-        if (saved.date === getTodayStr()) {
-          return saved.cards || [];
-        }
-      } catch (e) {
-        console.error("数据解析失败", e);
-      }
+        if (saved.date === getTodayStr()) return saved.cards || [];
+      } catch (e) { console.error(e); }
     }
     return [];
   });
 
-  const fileInputRef = useRef(null);
   const [expandedFolders, setExpandedFolders] = useState({
     '早餐': true, '午餐': true, '晚餐': true, '宵夜': true
   });
@@ -103,22 +83,6 @@ export default function App() {
     document.documentElement.style.backgroundColor = '#0a0a0c';
     document.body.style.backgroundColor = '#0a0a0c';
   }, [activeCards]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const today = getTodayStr();
-      const savedStr = localStorage.getItem('nutrition_data_v2');
-      if (savedStr) {
-        try {
-          const saved = JSON.parse(savedStr);
-          if (saved.date !== today) {
-            setActiveCards([]);
-          }
-        } catch (e) {}
-      }
-    }, 60000);
-    return () => clearInterval(interval);
-  }, []);
 
   const totals = useMemo(() => {
     return activeCards.reduce(
@@ -133,36 +97,30 @@ export default function App() {
     );
   }, [activeCards]);
 
+  // AI 交互逻辑
   const fetchNutritionFromAI = async (userInput) => {
-    const apiKeyToUse = GEMINI_API_KEY; 
-    
-    if (!IS_CANVAS && !apiKeyToUse) {
-      throw new Error("MISSING_KEY");
-    }
+    const apiKey = GEMINI_API_KEY; 
+    if (!IS_CANVAS && !apiKey) throw new Error("MISSING_KEY");
 
-    // 确保 API URL 路径完全符合 Google 规范
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKeyToUse}`;
+    // 使用标准 v1beta 接口
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
     
     const prompt = `
-      作为世界顶级的营养学专家，请分析用户的这句饮食记录："${userInput}"。
-      用户可能使用任何语言（如中文、英文、马来文、日文等），也可能是一段随意的日常描述。
-      请提取出句子中提及的所有食物及其对应数量，并估算它们的营养成分。
-      
-      必须严格按 JSON 格式返回，格式如下：
+      分析饮食记录："${userInput}"。提取所有食物及其对应数量。
+      必须按 JSON 返回：
       {
         "foods": [
           {
-            "name": "食物名 (请优先用中文显示，如果是当地特色食物可保留原文或加括号说明，如 Nasi Lemak)",
-            "unit": "用户描述的分量 (例如：1碗、2个、200g、1 piece)",
-            "calories": 该分量下的总热量(数字),
-            "protein": 该分量下的总蛋白质克数(数字),
-            "carbs": 该分量下的总碳水克数(数字),
-            "fat": 该分量下的总脂肪克数(数字),
+            "name": "食物名(中文)",
+            "unit": "分量(如1碗)",
+            "calories": 热量(数字),
+            "protein": 蛋白质(数字),
+            "carbs": 碳水(数字),
+            "fat": 脂肪(数字),
             "isFood": true
           }
         ]
       }
-      如果输入完全不包含食物，请返回 {"foods": []}。
     `;
 
     try {
@@ -171,28 +129,24 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { 
-            responseMimeType: "application/json",
-            temperature: 0.1 // 提高稳定性
-          }
+          generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
         }) 
       });
       
+      const data = await res.json();
       if (!res.ok) {
-        const errorData = await res.json();
-        console.error("API Error Response Detail:", errorData);
-        // 如果 1.5-flash 报错 404，可能是 API 版本问题，这里抛出详细错误
-        throw new Error(errorData.error?.message || "API_ERROR");
+        console.error("API Error Detail:", data);
+        // 抛出原始错误消息，方便诊断
+        throw new Error(data.error?.message || "API_ERROR");
       }
 
-      const data = await res.json();
       let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) return [];
       
       text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
       return JSON.parse(text).foods || [];
     } catch (e) {
-      console.error("AI Fetch Error:", e);
+      console.error("AI Error:", e);
       throw e;
     }
   };
@@ -211,7 +165,12 @@ export default function App() {
         const newCards = [];
         aiFoods.forEach(aiFood => {
           if (aiFood.isFood) {
-            newCards.push({ ...aiFood, uniqueId: `card-${Date.now()}-${Math.random()}`, quantity: 1, meal: selectedMeal });
+            newCards.push({ 
+              ...aiFood, 
+              uniqueId: `card-${Date.now()}-${Math.random()}`, 
+              quantity: 1, 
+              meal: selectedMeal 
+            });
           }
         });
 
@@ -220,16 +179,20 @@ export default function App() {
           setExpandedFolders(prev => ({ ...prev, [selectedMeal]: true }));
           setInputText('');
         } else {
-          setApiError("未识别到具体的食物成分，请换个描述方式试试。");
+          setApiError("未识别到具体的食物成分，请换个描述方式。");
         }
       } else {
-        setApiError("未能从您的话中提取出食物信息，请重试。");
+        setApiError("未能从您的话中提取出信息。");
       }
     } catch (e) {
-      if (e.message === "MISSING_KEY") {
-        setApiError("⚠️ 环境变量配置不正确。请确保 Vercel 变量名为 VITE_GEMINI_API_KEY。");
+      // 这里的错误提示现在会显示 Google 返回的真实原因
+      const msg = e.message;
+      if (msg === "MISSING_KEY") {
+        setApiError("⚠️ 环境变量 VITE_GEMINI_API_KEY 未配置。");
+      } else if (msg.includes('not found')) {
+        setApiError(`❌ 模型 ID [${GEMINI_MODEL}] 无法识别。请确认 API Key 是否属于支持 Gemini 1.5 的项目。`);
       } else {
-        setApiError(`解析失败: ${e.message.includes('not found') ? '模型 ID 错误，请尝试使用 gemini-1.5-flash' : 'API 请求出错'}`);
+        setApiError(`解析失败: ${msg}`);
       }
     } finally {
       setIsAnalyzing(false);
@@ -275,9 +238,7 @@ export default function App() {
   };
 
   const clearAllData = () => {
-    if (window.confirm("确定要清空今日所有记录吗？")) {
-      setActiveCards([]);
-    }
+    if (window.confirm("确定要清空今日所有记录吗？")) setActiveCards([]);
   };
 
   const formatNum = (num) => Number(num).toFixed(1).replace(/\.0$/, '');
@@ -291,11 +252,7 @@ export default function App() {
           </h1>
           <p className="text-gray-400 mt-2">智能解析，轻松管理每日摄入。</p>
         </div>
-        <button 
-          onClick={clearAllData}
-          className="p-3 bg-[#1c1d24] rounded-2xl border border-gray-800 text-gray-500 hover:text-red-500 transition-colors"
-          title="清空记录"
-        >
+        <button onClick={clearAllData} className="p-3 bg-[#1c1d24] rounded-2xl border border-gray-800 text-gray-500 hover:text-red-500 transition-colors">
           <Trash2 className="w-5 h-5" />
         </button>
       </header>
@@ -317,40 +274,21 @@ export default function App() {
         <section>
           <div className="flex gap-2 mb-3 overflow-x-auto pb-1 no-scrollbar">
             {MEAL_TYPES.map((meal) => (
-              <button 
-                key={meal} 
-                onClick={() => setSelectedMeal(meal)} 
-                className={`flex items-center shrink-0 px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${selectedMeal === meal ? 'bg-[#ff5a1f] text-white shadow-lg' : 'bg-[#1c1d24] text-gray-400 border border-gray-800'}`}
-              >
+              <button key={meal} onClick={() => setSelectedMeal(meal)} className={`flex items-center shrink-0 px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${selectedMeal === meal ? 'bg-[#ff5a1f] text-white shadow-lg' : 'bg-[#1c1d24] text-gray-400 border border-gray-800'}`}>
                 {renderMealIcon(meal, "w-4 h-4 mr-2")} {meal}
               </button>
             ))}
           </div>
 
           <div className="bg-[#15161a] rounded-2xl border border-gray-800 p-2 focus-within:border-[#ff5a1f] transition-all shadow-inner group">
-            <textarea 
-              className="w-full bg-transparent text-white p-4 outline-none resize-none h-28 placeholder:text-gray-600 leading-relaxed" 
-              placeholder={`输入${selectedMeal}吃了什么？\n例如：2个鸡蛋，一碗燕麦片...`} 
-              value={inputText} 
-              onChange={(e) => setInputText(e.target.value)} 
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleParseInput())}
-              disabled={isAnalyzing} 
-            />
+            <textarea className="w-full bg-transparent text-white p-4 outline-none resize-none h-28 placeholder:text-gray-600 leading-relaxed" placeholder={`输入${selectedMeal}吃了什么？`} value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleParseInput())} disabled={isAnalyzing} />
             <div className="flex justify-between items-center px-2 pb-2">
-              <button 
-                onClick={() => fileInputRef.current?.click()} 
-                className="flex items-center gap-2 text-gray-500 hover:text-white px-3 py-2 rounded-lg hover:bg-gray-800 transition-all"
-                disabled={isAnalyzing}
-              >
+              <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 text-gray-500 hover:text-white px-3 py-2 rounded-lg hover:bg-gray-800 transition-all" disabled={isAnalyzing}>
                 {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin text-[#ff5a1f]" /> : <Camera className="w-5 h-5" />}
                 <span className="text-sm font-medium">{isAnalyzing ? '分析中...' : '拍照识别'}</span>
                 <input type="file" accept="image/*" hidden ref={fileInputRef} onChange={handleImageUpload} />
               </button>
-              <button 
-                onClick={() => handleParseInput()} 
-                disabled={!inputText.trim() || isAnalyzing} 
-                className="bg-[#ff5a1f] hover:bg-[#ff7a47] active:scale-95 text-white px-8 py-2.5 rounded-xl font-bold flex items-center disabled:opacity-50 disabled:scale-100 transition-all"
-              >
+              <button onClick={() => handleParseInput()} disabled={!inputText.trim() || isAnalyzing} className="bg-[#ff5a1f] hover:bg-[#ff7a47] active:scale-95 text-white px-8 py-2.5 rounded-xl font-bold flex items-center disabled:opacity-50 transition-all">
                 生成卡片 <ArrowRight className="w-4 h-4 ml-2" />
               </button>
             </div>
@@ -370,16 +308,10 @@ export default function App() {
             const mealCards = activeCards.filter(card => card.meal === meal);
             if (mealCards.length === 0) return null;
             const mealCals = mealCards.reduce((acc, card) => acc + (card.calories || 0) * (card.quantity || 1), 0);
-            
             return (
-              <div key={meal} className="bg-[#15161a] rounded-2xl border border-gray-800 overflow-hidden animate-in fade-in duration-500">
-                <div 
-                  onClick={() => setExpandedFolders(prev => ({...prev, [meal]: !prev[meal]}))} 
-                  className="flex items-center justify-between p-5 cursor-pointer hover:bg-[#1c1d24] transition-colors"
-                >
-                  <h3 className="text-xl font-bold flex items-center">
-                    <span className="text-[#ff5a1f] mr-3">{renderMealIcon(meal, "w-5 h-5")}</span>{meal}
-                  </h3>
+              <div key={meal} className="bg-[#15161a] rounded-2xl border border-gray-800 overflow-hidden animate-in fade-in">
+                <div onClick={() => setExpandedFolders(prev => ({...prev, [meal]: !prev[meal]}))} className="flex items-center justify-between p-5 cursor-pointer hover:bg-[#1c1d24]">
+                  <h3 className="text-xl font-bold flex items-center"><span className="text-[#ff5a1f] mr-3">{renderMealIcon(meal, "w-5 h-5")}</span>{meal}</h3>
                   <div className="flex items-center gap-4">
                     <span className="text-sm font-bold text-gray-400">{formatNum(mealCals)} kcal</span>
                     {expandedFolders[meal] ? <ChevronUp className="w-5 h-5 text-gray-600" /> : <ChevronDown className="w-5 h-5 text-gray-600" />}
@@ -388,12 +320,7 @@ export default function App() {
                 {expandedFolders[meal] && (
                   <div className="p-5 pt-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 border-t border-gray-800/50 bg-black/20">
                     {mealCards.map((card) => (
-                      <FoodCard 
-                        key={card.uniqueId} 
-                        card={card} 
-                        onUpdateQty={(id, d) => setActiveCards(prev => prev.map(c => c.uniqueId === id ? {...c, quantity: Math.max(1, c.quantity + d)} : c))} 
-                        onRemove={(id) => setActiveCards(prev => prev.filter(c => c.uniqueId !== id))} 
-                      />
+                      <FoodCard key={card.uniqueId} card={card} onUpdateQty={(id, d) => setActiveCards(prev => prev.map(c => c.uniqueId === id ? {...c, quantity: Math.max(1, c.quantity + d)} : c))} onRemove={(id) => setActiveCards(prev => prev.filter(c => c.uniqueId !== id))} />
                     ))}
                   </div>
                 )}
@@ -401,13 +328,6 @@ export default function App() {
             );
           })}
         </section>
-
-        {activeCards.length === 0 && !isAnalyzing && (
-          <div className="py-20 text-center flex flex-col items-center opacity-20">
-            <History className="w-16 h-16 mb-4" />
-            <p className="text-lg">今日暂无记录，开启你的营养追踪吧</p>
-          </div>
-        )}
       </main>
     </div>
   );
@@ -415,41 +335,24 @@ export default function App() {
 
 function StatBox({ label, value, unit, color, icon }) {
   return (
-    <div className="bg-[#1c1d24] rounded-2xl p-5 border border-gray-800/50 hover:border-gray-700 transition-colors">
-      <div className="flex items-center justify-between mb-3 text-[10px] uppercase tracking-widest text-gray-500 font-bold">
-        {label} {icon}
-      </div>
-      <div className="flex items-baseline gap-1">
-        <span className={`text-2xl font-black ${color}`}>{value}</span>
-        <span className="text-gray-600 text-xs font-medium">{unit}</span>
-      </div>
+    <div className="bg-[#1c1d24] rounded-2xl p-5 border border-gray-800/50 transition-colors">
+      <div className="flex items-center justify-between mb-3 text-[10px] uppercase tracking-widest text-gray-500 font-bold">{label} {icon}</div>
+      <div className="flex items-baseline gap-1"><span className={`text-2xl font-black ${color}`}>{value}</span><span className="text-gray-600 text-xs font-medium">{unit}</span></div>
     </div>
   );
 }
 
 function FoodCard({ card, onUpdateQty, onRemove }) {
   const formatNum = (num) => Number(num || 0).toFixed(1).replace(/\.0$/, '');
-  
   return (
-    <div className="bg-[#1c1d24] border border-gray-800 hover:border-gray-600 rounded-2xl p-5 relative group transition-all animate-in zoom-in-95 duration-200">
-      <button 
-        onClick={() => onRemove(card.uniqueId)} 
-        className="absolute top-3 right-3 text-gray-600 hover:text-red-500 p-1 rounded-md hover:bg-red-500/10 transition-all opacity-0 group-hover:opacity-100"
-      >
-        <X className="w-4 h-4" />
-      </button>
-      
-      <div className="mb-4 pr-6">
-        <h4 className="font-bold text-white truncate">{card.name}</h4>
-        <p className="text-[10px] text-gray-500 font-medium uppercase tracking-tighter mt-0.5">{card.unit}</p>
-      </div>
-
+    <div className="bg-[#1c1d24] border border-gray-800 rounded-2xl p-5 relative group transition-all">
+      <button onClick={() => onRemove(card.uniqueId)} className="absolute top-3 right-3 text-gray-600 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100"><X className="w-4 h-4" /></button>
+      <div className="mb-4 pr-6"><h4 className="font-bold text-white truncate">{card.name}</h4><p className="text-[10px] text-gray-500 font-medium uppercase mt-0.5">{card.unit}</p></div>
       <div className="flex items-center bg-[#0a0a0c] rounded-xl w-max p-1 mb-5 border border-gray-800">
-        <button onClick={() => onUpdateQty(card.uniqueId, -1)} className="p-2 hover:bg-gray-800 rounded-lg transition-colors"><Minus className="w-3 h-3" /></button>
+        <button onClick={() => onUpdateQty(card.uniqueId, -1)} className="p-2 hover:bg-gray-800 rounded-lg"><Minus className="w-3 h-3" /></button>
         <span className="w-10 text-center font-black text-sm">{card.quantity}</span>
-        <button onClick={() => onUpdateQty(card.uniqueId, 1)} className="p-2 hover:bg-gray-800 rounded-lg transition-colors"><Plus className="w-3 h-3" /></button>
+        <button onClick={() => onUpdateQty(card.uniqueId, 1)} className="p-2 hover:bg-gray-800 rounded-lg"><Plus className="w-3 h-3" /></button>
       </div>
-
       <div className="grid grid-cols-2 gap-y-3 gap-x-4">
         <NutrientLine label="热量" val={formatNum(card.calories * card.quantity)} unit="kcal" color="text-white" />
         <NutrientLine label="蛋白质" val={formatNum(card.protein * card.quantity)} unit="g" color="text-blue-400" />
@@ -464,10 +367,7 @@ function NutrientLine({ label, val, unit, color }) {
   return (
     <div className="flex flex-col">
       <span className="text-[9px] text-gray-600 font-bold uppercase">{label}</span>
-      <div className="flex items-baseline gap-0.5">
-        <span className={`text-xs font-bold ${color}`}>{val}</span>
-        <span className="text-[9px] text-gray-600">{unit}</span>
-      </div>
+      <div className="flex items-baseline gap-0.5"><span className={`text-xs font-bold ${color}`}>{val}</span><span className="text-[9px] text-gray-600">{unit}</span></div>
     </div>
   );
 }
