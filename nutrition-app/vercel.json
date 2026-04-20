@@ -1,7 +1,7 @@
 {
-  "buildCommand": "cd nutrition-app && npm run build",
-  "outputDirectory": "nutrition-app/dist",
-  "framework": null,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ]
