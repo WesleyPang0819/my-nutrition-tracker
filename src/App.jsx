@@ -7,14 +7,31 @@ import {
 } from 'lucide-react';
 
 // ==========================================
-// 0. 配置中心 (安全环境变量模式)
+// 0. 配置中心 (环境兼容安全模式)
 // ==========================================
-// ⚠️ 重要提示：在您将代码复制到 VS Code 后，请务必将下面这行修改回：
-// const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
-// 外网真实部署统一使用 1.5-flash 稳定模型
-const GEMINI_MODEL = "gemini-1.5-flash-latest";
+// 编写一个安全的函数来获取环境变量，防止在不支持 import.meta 的预览环境中崩溃
+const getSafeEnvKey = () => {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      return import.meta.env.VITE_GEMINI_API_KEY || "";
+    }
+  } catch (e) {
+    // 忽略错误
+  }
+  return "";
+};
+
+// 自动识别是否在预览沙盒环境 (Canvas)
+const IS_CANVAS = typeof window !== 'undefined' && window.location.hostname.includes('usercontent.goog');
+
+// 获取最终使用的 API Key
+const GEMINI_API_KEY = IS_CANVAS ? "" : getSafeEnvKey(); 
+
+// 模型名称配置：
+// 预览区必须使用实验版：gemini-2.5-flash-preview-09-2025
+// 外部部署 (Vercel) 使用标准版：gemini-1.5-flash (注意：不要加 -latest 或大写字母)
+const GEMINI_MODEL = IS_CANVAS ? "gemini-2.5-flash-preview-09-2025" : "gemini-1.5-flash";
 
 // ==========================================
 // 1. 食物数据库 (基础参考)
@@ -52,21 +69,17 @@ export default function App() {
   const [selectedMeal, setSelectedMeal] = useState(MEAL_TYPES[0]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [apiError, setApiError] = useState('');
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   
-  // 获取今天的本地日期字符串 (格式: YYYY-M-D)
   const getTodayStr = () => {
     const today = new Date();
     return `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
   };
 
-  // 从本地存储加载数据，如果是新的一天则完全为空
   const [activeCards, setActiveCards] = useState(() => {
     const savedStr = localStorage.getItem('nutrition_data_v2');
     if (savedStr) {
       try {
         const saved = JSON.parse(savedStr);
-        // 如果保存的数据日期是今天，才加载出来；否则返回空数组
         if (saved.date === getTodayStr()) {
           return saved.cards || [];
         }
@@ -74,7 +87,7 @@ export default function App() {
         console.error("数据解析失败", e);
       }
     }
-    return []; // 默认完全空白，没有示例食物
+    return [];
   });
 
   const fileInputRef = useRef(null);
@@ -82,22 +95,15 @@ export default function App() {
     '早餐': true, '午餐': true, '晚餐': true, '宵夜': true
   });
 
-  // ------------------------------------------
-  // 副作用：保存数据到本地 & 跨天自动清零
-  // ------------------------------------------
   useEffect(() => {
-    // 保存时连同今天的日期一起存进去 (改用新 key 避免旧数据冲突)
     localStorage.setItem('nutrition_data_v2', JSON.stringify({
       date: getTodayStr(),
       cards: activeCards
     }));
-    
-    // 修复手机端上下滑动时露出的白边（将网页最底层的背景也设为深色）
     document.documentElement.style.backgroundColor = '#0a0a0c';
     document.body.style.backgroundColor = '#0a0a0c';
   }, [activeCards]);
 
-  // 定时器：如果用户一直开着网页过了半夜 12 点，自动清空数据
   useEffect(() => {
     const interval = setInterval(() => {
       const today = getTodayStr();
@@ -106,18 +112,14 @@ export default function App() {
         try {
           const saved = JSON.parse(savedStr);
           if (saved.date !== today) {
-            setActiveCards([]); // 跨天了，自动清空列表！
+            setActiveCards([]);
           }
         } catch (e) {}
       }
-    }, 60000); // 每分钟检查一次当前时间
-
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
-  // ------------------------------------------
-  // 核心计算逻辑
-  // ------------------------------------------
   const totals = useMemo(() => {
     return activeCards.reduce(
       (acc, card) => {
@@ -131,16 +133,16 @@ export default function App() {
     );
   }, [activeCards]);
 
-  // ------------------------------------------
-  // AI 交互逻辑
-  // ------------------------------------------
   const fetchNutritionFromAI = async (userInput) => {
-    if (!GEMINI_API_KEY) {
+    const apiKeyToUse = GEMINI_API_KEY; 
+    
+    if (!IS_CANVAS && !apiKeyToUse) {
       throw new Error("MISSING_KEY");
     }
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+    // 确保 API URL 路径完全符合 Google 规范
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKeyToUse}`;
     
-    // 全新升级的 Prompt：支持自然语言理解、多语言、自动提取分量
     const prompt = `
       作为世界顶级的营养学专家，请分析用户的这句饮食记录："${userInput}"。
       用户可能使用任何语言（如中文、英文、马来文、日文等），也可能是一段随意的日常描述。
@@ -169,22 +171,25 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
+          generationConfig: { 
+            responseMimeType: "application/json",
+            temperature: 0.1 // 提高稳定性
+          }
         }) 
       });
-      const data = await res.json();
       
-      if (data.error) {
-        console.error("API Error Response:", data.error);
-        throw new Error("API_ERROR");
+      if (!res.ok) {
+        const errorData = await res.json();
+        console.error("API Error Response Detail:", errorData);
+        // 如果 1.5-flash 报错 404，可能是 API 版本问题，这里抛出详细错误
+        throw new Error(errorData.error?.message || "API_ERROR");
       }
 
+      const data = await res.json();
       let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) return [];
       
-      // 增强稳定性：自动清除可能出现的 markdown json 符号
       text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-      
       return JSON.parse(text).foods || [];
     } catch (e) {
       console.error("AI Fetch Error:", e);
@@ -200,14 +205,12 @@ export default function App() {
     setApiError('');
 
     try {
-      // 直接将整句自然语言交给 AI 处理
       const aiFoods = await fetchNutritionFromAI(textToParse);
       
       if (aiFoods && aiFoods.length > 0) {
         const newCards = [];
         aiFoods.forEach(aiFood => {
           if (aiFood.isFood) {
-            // AI 返回的已经是该分量的总计，所以初始 quantity 设为 1
             newCards.push({ ...aiFood, uniqueId: `card-${Date.now()}-${Math.random()}`, quantity: 1, meal: selectedMeal });
           }
         });
@@ -223,11 +226,10 @@ export default function App() {
         setApiError("未能从您的话中提取出食物信息，请重试。");
       }
     } catch (e) {
-      console.error("Parse Error:", e);
       if (e.message === "MISSING_KEY") {
-        setApiError("⚠️ 请先在代码第 14 行的 GEMINI_API_KEY 填入你的 Key！");
+        setApiError("⚠️ 环境变量配置不正确。请确保 Vercel 变量名为 VITE_GEMINI_API_KEY。");
       } else {
-        setApiError("解析请求出错，请检查网络或 API Key 是否正确。");
+        setApiError(`解析失败: ${e.message.includes('not found') ? '模型 ID 错误，请尝试使用 gemini-1.5-flash' : 'API 请求出错'}`);
       }
     } finally {
       setIsAnalyzing(false);
@@ -237,10 +239,6 @@ export default function App() {
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!GEMINI_API_KEY) {
-       setApiError("⚠️ 缺少 API Key，无法使用拍照功能");
-       return;
-    }
     
     setIsAnalyzing(true);
     const reader = new FileReader();
@@ -284,9 +282,6 @@ export default function App() {
 
   const formatNum = (num) => Number(num).toFixed(1).replace(/\.0$/, '');
 
-  // ------------------------------------------
-  // UI 渲染
-  // ------------------------------------------
   return (
     <div className="min-h-[100dvh] bg-[#0a0a0c] text-white font-sans pb-20 selection:bg-[#ff5a1f]/30">
       <header className="pt-10 pb-6 px-6 max-w-5xl mx-auto flex justify-between items-start">
@@ -306,7 +301,6 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 space-y-8">
-        {/* 仪表盘 */}
         <section className="bg-[#15161a] rounded-3xl p-6 border border-gray-800 shadow-2xl relative overflow-hidden">
           <div className="absolute -top-20 -right-20 w-40 h-40 bg-[#ff5a1f] opacity-10 rounded-full blur-3xl pointer-events-none"></div>
           <h2 className="text-gray-400 font-medium mb-4 flex items-center">
@@ -320,7 +314,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* 输入区 */}
         <section>
           <div className="flex gap-2 mb-3 overflow-x-auto pb-1 no-scrollbar">
             {MEAL_TYPES.map((meal) => (
@@ -372,7 +365,6 @@ export default function App() {
           )}
         </section>
 
-        {/* 食物卡片列表 */}
         <section className="space-y-4">
           {MEAL_TYPES.map(meal => {
             const mealCards = activeCards.filter(card => card.meal === meal);
@@ -420,10 +412,6 @@ export default function App() {
     </div>
   );
 }
-
-// ------------------------------------------
-// 子组件
-// ------------------------------------------
 
 function StatBox({ label, value, unit, color, icon }) {
   return (
