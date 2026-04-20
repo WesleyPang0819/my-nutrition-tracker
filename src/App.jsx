@@ -14,7 +14,7 @@ import {
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
 // 外网真实部署统一使用 1.5-flash 稳定模型
-const GEMINI_MODEL = "gemini-1.5-flash";
+const GEMINI_MODEL = "gemini-1.5-flash-latest";
 
 // ==========================================
 // 1. 食物数据库 (基础参考)
